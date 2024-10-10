@@ -1,33 +1,37 @@
+from mpi4py import MPI
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
 import os
-import multiprocessing
+import sys
+import io
+import warnings
 
-# Function to load and preprocess data from CSV
-def load_data(csv_file):
-    # Load the CSV file
-    data = pd.read_csv(csv_file)
-    
-    # Extract relevant columns (e.g., 'close' price)
-    prices = data['close'].values
-    prices = prices.reshape(-1, 1)  # Reshape for scaling
+# Ignore TensorFlow specific warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='tensorflow')
 
-    # Scale the data to [0, 1] range
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(prices)
+# Other TensorFlow imports and code...
 
-    return scaled_data, scaler
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# Set the encoding to UTF-8
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# Initialize MPI
+comm = MPI.COMM_WORLD
+rank = comm.Get_rank()
+size = comm.Get_size()
 
-# Function to create datasets
-def create_dataset(data, time_steps):
-    X, y = [], []
-    for i in range(len(data) - time_steps - 1):
-        X.append(data[i:(i + time_steps), 0])
-        y.append(data[i + time_steps, 0])
-    return np.array(X), np.array(y)
+# Get the current script directory dynamically
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Directories for saving models and data
+model_save_dir = os.path.join(script_dir, 'Backend', 'model', 'trained_models')
+data_dir = os.path.join(script_dir, 'pre_processed_data')  # Directory where CSV files are stored
+
+# Ensure directories exist
+os.makedirs(model_save_dir, exist_ok=True)
+os.makedirs(data_dir, exist_ok=True)
 
 # Function to build the LSTM model
 def build_lstm_model(input_shape):
@@ -36,88 +40,105 @@ def build_lstm_model(input_shape):
         tf.keras.layers.Dropout(0.2),
         tf.keras.layers.LSTM(128, return_sequences=False, stateful=False),
         tf.keras.layers.Dropout(0.2),
-        tf.keras.layers.Dense(1)  # Output layer
+        tf.keras.layers.Dense(1)  # Output layer for predicting a single value
     ])
     model.compile(optimizer='adam', loss='mean_squared_error')
     return model
 
-# Function to extract weights, biases, and recurrent weights
-def extract_weights_biases(model):
-    lstm_layers = [layer for layer in model.layers if isinstance(layer, tf.keras.layers.LSTM)]
-    weights_data = []
+# Function to create dataset for training
+def create_training_dataset(data, time_steps):
+    X, y = [], []
+    for i in range(time_steps, len(data)):
+        X.append(data[i - time_steps:i, 0])
+        y.append(data[i, 0])
+    return np.array(X), np.array(y)
 
-    for lstm_layer in lstm_layers:
-        W, U, B = lstm_layer.get_weights()  # W = input kernel, U = recurrent kernel, B = bias
-        weights_data.append({
-            "W": W.tolist(),  # Converting numpy arrays to list for saving in CSV
-            "U": U.tolist(),
-            "B": B.tolist()
-        })
-    
-    return weights_data
+def load_data(csv_file):
+    data = pd.read_csv(csv_file, encoding='utf-8')  # Specify encoding
+    prices = data['close'].values.reshape(-1, 1)
 
-# Function to train the model for a given stock
-def train_model_for_stock(csv_files):
-    time_steps = 60  # Time steps for LSTM
-    output_data = []  # List to store output for CSV
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(prices)
+    return scaled_data, scaler
 
-    for csv_file in csv_files:
-        stock_name = os.path.basename(csv_file).split('.')[0]  # Get stock name from filename
-        print(f"Training model for: {stock_name}")
-        scaled_data, scaler = load_data(csv_file)
-        
-        # Create datasets
-        X, y = create_dataset(scaled_data, time_steps)
-        
-        # Check for sufficient data
-        if X.shape[0] == 0 or X.shape[1] != time_steps:
-            print(f"Skipping {csv_file} due to insufficient data.")
-            continue
-        
-        # Reshape input to be [samples, time steps, features]
-        X = X.reshape(X.shape[0], X.shape[1], 1)
+# Function to save the trained model
+def save_model(model, stock_name):
+    save_path = os.path.join(model_save_dir, f"{stock_name}_lstm_model.keras")  # Change .h5 to .keras
+    model.save(save_path)
+    print(f"Model saved to {save_path}")
 
-        # Split into training and testing data
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+# Function to train the LSTM model
+def train_model(csv_file, time_steps):
+    stock_name = os.path.basename(csv_file).split('.')[0]
+    print(f"Training model for stock: {stock_name} on rank {rank}")
 
-        # Build and train the model
-        model = build_lstm_model((X_train.shape[1], 1))
-        model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=1)
+    # Load and preprocess data
+    scaled_data, _ = load_data(csv_file)
 
-        # Extract and store weights, biases, and recurrent weights
-        weights_data = extract_weights_biases(model)
-        
-        # Append the stock name and model parameters to output data
-        for layer_idx, layer_data in enumerate(weights_data):
-            output_data.append({
-                "stock_name": stock_name,
-                "layer": layer_idx + 1,
-                "W": layer_data["W"],
-                "U": layer_data["U"],
-                "B": layer_data["B"],
-            })
+    # Indicate that training has started
+    print(f"Started training on {stock_name} after loading the CSV.")
 
-    # Check if the file exists to decide if the header should be written
-    file_exists = os.path.isfile('Backend/model/training_output.csv')
+    # Prepare training dataset
+    X_train, y_train = create_training_dataset(scaled_data, time_steps)
+    X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
 
-    # Save the output data to CSV in append mode
-    if output_data:
-        output_df = pd.DataFrame(output_data)
-        output_df.to_csv('Backend/model/training_output.csv', mode='a', header=not file_exists, index=False)
+    # Build the model
+    model = build_lstm_model((X_train.shape[1], 1))
 
-# Function to parallelize training across multiple CSV files
-# Function to parallelize training across multiple CSV files
-def parallel_training():
-    csv_folder = 'Backend/model/pre_processed_data'  # Specify the path to your CSV files
-    csv_files = [os.path.join(csv_folder, f) for f in os.listdir(csv_folder) if f.endswith('.csv')]
+    # Train the model
+    model.fit(X_train, y_train, epochs=10, batch_size=32, verbose=0)
 
-    # Only take the first 10 CSV files
-    csv_files = csv_files[:10]
+    # Save the model
+    save_model(model, stock_name)
 
-    num_threads = min(4, len(csv_files))  # Limit the number of threads to the number of files
+    # Notify that the model has been trained
+    print(f"{stock_name} model has been trained.")
 
-    with multiprocessing.Pool(processes=num_threads) as pool:
-        pool.map(train_model_for_stock, [[csv_file] for csv_file in csv_files])  # Each thread gets one file
+def master_task(csv_files, time_steps):
+    num_files = len(csv_files)
 
-if __name__ == '__main__':
-    parallel_training()
+    # Handle the case where no slave processes are available
+    if size <= 1:
+        print("\nOnly the master is running. Processing all files directly. \n")
+        for file in csv_files:
+            train_model(file, time_steps)
+        return
+
+    chunk_size = num_files // (size - 1)
+
+    # Distribute work to slaves
+    for i in range(1, size):
+        start_idx = (i - 1) * chunk_size
+        if i == size - 1:  # Last chunk might have more if num_files is not divisible evenly
+            end_idx = num_files
+        else:
+            end_idx = start_idx + chunk_size
+
+        comm.send(csv_files[start_idx:end_idx], dest=i, tag=i)
+
+# Slave function to receive work and perform computations
+def slave_task(time_steps):
+    files = comm.recv(source=0, tag=rank)
+    print(f"Rank {rank} received {len(files)} files to process.")
+    for file in files:
+        train_model(file, time_steps)
+
+# Main block
+if __name__ == "__main__":
+    time_steps = 60
+
+    if rank == 0:
+        # Master: Get files and distribute tasks
+        csv_files = [os.path.join(data_dir, file) for file in os.listdir(data_dir) if file.endswith('.csv')]
+        # Limit to first 10 CSV files for testing
+        csv_files = csv_files[:10]  # Get only the first 10 files for testing
+        if len(csv_files) == 0:
+            print(f"No CSV files found in {data_dir}")
+        else:
+            master_task(csv_files, time_steps)
+    else:
+        # Slave: Receive and process assigned files
+        slave_task(time_steps)
+
+# Finalize the MPI environment
+MPI.Finalize()
