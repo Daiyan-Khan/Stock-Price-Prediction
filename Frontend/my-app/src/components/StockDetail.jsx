@@ -9,53 +9,48 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, T
 const StockDetail = () => {
     const { stockName } = useParams();
     const [stockData, setStockData] = useState([]);
-    const [predictedPrice, setPredictedPrice] = useState(null);
+    const [predictedPrices, setPredictedPrices] = useState([]);
+    const [nextDayPrediction, setNextDayPrediction] = useState(null);
 
     useEffect(() => {
         const fetchStockData = async () => {
             try {
-                const response = await axios.get(`http://localhost:5003/api/stocks/${stockName}`);
-                setStockData(response.data.slice(-10));  // Get latest 10 records
+                const response = await axios.get(`http://localhost:5003/api/stocks/${stockName}/details`);
+                const { actual, predicted, next_day_prediction } = response.data;
+                const latestStockData = actual.slice(-10); // Get latest 10 records
+                setStockData(latestStockData);
+                setPredictedPrices(predicted);
+                setNextDayPrediction(next_day_prediction);
             } catch (error) {
                 console.error('Error fetching stock data:', error);
             }
         };
 
-        const fetchPrediction = async () => {
-            try {
-                const predictionResponse = await axios.post('http://localhost:5001/predict', {
-                    stock_name: stockName
-                });
-                setPredictedPrice(predictionResponse.data.predicted_price);
-            } catch (error) {
-                console.error('Error fetching prediction:', error);
-            }
-        };
-
         fetchStockData();
-        fetchPrediction();
     }, [stockName]);
 
-    // Adding the predicted price to the chart data
-    const extendedStockData = [...stockData]; // Copy stockData
-    if (predictedPrice !== null) {
-        extendedStockData.push({
-            date: 'Prediction',  // Label for predicted price
-            close: predictedPrice,
-        });
-    }
-
+    // Prepare chart data
     const chartData = {
-        labels: extendedStockData.map((record, index) => record.date === 'Prediction' ? 'Prediction' : `Record ${index + 1}`),
+        labels: stockData.map((record, index) => `Record ${index + 1}`),
         datasets: [
             {
                 label: `${stockName} Close Prices`,
-                data: extendedStockData.map(record => record.close),  // Use the close price for chart data
+                data: stockData.map(record => record.close),
                 borderColor: 'rgba(75, 192, 192, 1)',
                 backgroundColor: 'rgba(75, 192, 192, 0.2)',
                 borderWidth: 2,
                 fill: true,
-            }
+            },
+            {
+                label: 'Predicted Prices',
+                data: predictedPrices.map(record => record.predicted_price), // Use the predicted prices
+                borderColor: 'rgba(255, 99, 132, 1)',
+                backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                borderWidth: 2,
+                fill: true,
+                pointRadius: 5, // Highlight the prediction points
+                pointHoverRadius: 7,
+            },
         ],
     };
 
@@ -88,6 +83,7 @@ const StockDetail = () => {
                                 <th>Index</th>
                                 <th>Date</th>
                                 <th>Close Price</th>
+                                <th>Predicted Price</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -96,14 +92,16 @@ const StockDetail = () => {
                                     <td>{index + 1}</td>
                                     <td>{new Date(record.date).toLocaleDateString()}</td>
                                     <td>{record.close.toFixed(2)}</td>
+                                    <td>{predictedPrices[index] ? predictedPrices[index].predicted_price.toFixed(2) : 'N/A'}</td>
                                 </tr>
                             ))}
-                            {/* Display predicted price in the table */}
-                            {predictedPrice !== null && (
+                            {/* Display next day's predicted price in the table */}
+                            {nextDayPrediction !== null && (
                                 <tr>
                                     <td>{stockData.length + 1}</td>
-                                    <td>Prediction</td>
-                                    <td>{predictedPrice.toFixed(2)}</td>
+                                    <td>Prediction (Next Day)</td>
+                                    <td>{'N/A'}</td>
+                                    <td>{nextDayPrediction.toFixed(2)}</td>
                                 </tr>
                             )}
                         </tbody>
@@ -112,10 +110,10 @@ const StockDetail = () => {
             )}
 
             <h2>Predicted Next Close Price</h2>
-            {predictedPrice === null ? (
+            {nextDayPrediction === null ? (
                 <p>Loading prediction...</p>
             ) : (
-                <p>The predicted next close price is: ${predictedPrice.toFixed(2)}</p>
+                <p>The predicted next close price is: ${nextDayPrediction.toFixed(2)}</p>
             )}
         </div>
     );
