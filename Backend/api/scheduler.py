@@ -3,10 +3,10 @@ import requests
 import pandas as pd
 import schedule
 import time
-import data_service
-import fetch_new_data
-import training
-import prediction
+import api.data_service.data_service as data_service
+import api.fetch_new_data.fetch_new_data as fetch_new_data
+import api.training.training as training
+import api.prediction.prediction as prediction
 
 def job():
     """The scheduled job to fetch data, preprocess, and train the model."""

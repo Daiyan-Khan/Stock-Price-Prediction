@@ -1,7 +1,7 @@
 import os
 import requests
 import pandas as pd
-from api.data_service import get_stock_list
+from api.data_service.data_service import get_stock_list
 
 API_KEY = "UE4CU1RV2HT3L1UI"
 ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"

@@ -3,7 +3,7 @@ import os
 import tensorflow as tf
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
-from api.data_service import load_data
+from api.data_service.data_service import load_data
 import logging
 from flask_cors import CORS
 from datetime import datetime, timedelta
